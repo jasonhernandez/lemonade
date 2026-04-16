@@ -122,6 +122,19 @@ void OllamaApi::handle_anthropic_messages(const httplib::Request& req, httplib::
         std::string model = normalize_model_name(request_json.value("model", ""));
         request_json["model"] = model;
 
+        // Disable extended thinking by default. Models with reasoning capabilities
+        // (e.g. Qwen3) will otherwise consume all output tokens on internal
+        // chain-of-thought and produce an empty visible response. Callers that want
+        // thinking can pass `{"thinking": {"type": "enabled"}}` explicitly per the
+        // Anthropic spec.
+        const bool thinking_explicitly_enabled =
+            request_json.contains("thinking") &&
+            request_json["thinking"].is_object() &&
+            request_json["thinking"].value("type", "") == "enabled";
+        if (!thinking_explicitly_enabled) {
+            request_json["chat_template_kwargs"] = {{"enable_thinking", false}};
+        }
+
         try {
             auto_load_model(model);
         } catch (const std::exception&) {
