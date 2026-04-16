@@ -419,6 +419,71 @@ class AnthropicApiTests(ServerTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json().get("type"), "message")
 
+    def test_015_thinking_disabled_by_default(self):
+        """Response content must not be empty when no thinking param is sent.
+
+        Reasoning models (e.g. Qwen3) default to extended thinking, which
+        consumes all output tokens on internal chain-of-thought and produces an
+        empty visible response. Lemonade should suppress thinking unless the
+        caller opts in via {"thinking": {"type": "enabled"}}.
+        """
+        self.ensure_model_pulled()
+
+        payload = {
+            "model": ENDPOINT_TEST_MODEL,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "Say hello"}],
+        }
+        response = requests.post(
+            f"{ANTHROPIC_BASE_URL}/v1/messages",
+            json=payload,
+            timeout=TIMEOUT_MODEL_OPERATION,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body.get("type"), "message")
+        content = body.get("content", [])
+        self.assertTrue(len(content) > 0, "content array must not be empty")
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        self.assertTrue(len(text_blocks) > 0, "response must contain at least one text block")
+        self.assertGreater(
+            len(text_blocks[0].get("text", "")),
+            0,
+            "text block must not be empty — thinking may be consuming all output tokens",
+        )
+
+    def test_016_thinking_disabled_by_default_streaming(self):
+        """Streamed response must deliver non-empty text content by default."""
+        self.ensure_model_pulled()
+
+        payload = {
+            "model": ENDPOINT_TEST_MODEL,
+            "max_tokens": 64,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Say hello"}],
+        }
+        response = requests.post(
+            f"{ANTHROPIC_BASE_URL}/v1/messages",
+            json=payload,
+            timeout=TIMEOUT_MODEL_OPERATION,
+            stream=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        events, _ = self._collect_sse_events(response)
+        text_deltas = [
+            data["delta"].get("text", "")
+            for name, data in events
+            if name == "content_block_delta"
+            and data.get("delta", {}).get("type") == "text_delta"
+        ]
+        self.assertGreater(
+            len("".join(text_deltas)),
+            0,
+            "streamed text content must not be empty — thinking may be consuming all output tokens",
+        )
+
 
 if __name__ == "__main__":
     parse_args(modality="llm")
